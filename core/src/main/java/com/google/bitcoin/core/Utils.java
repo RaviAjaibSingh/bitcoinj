@@ -260,6 +260,20 @@ public class Utils {
     }
     
     /**
+     * Reverses a byte array in-place.
+     */
+    public static void reverseBytesInPlace(byte[] bytes)
+    {
+        int l = bytes.length;
+        for (int j = 0; j < l / 2; j++)
+        {
+            byte temp = bytes[j];
+            bytes[j] = bytes[l - j - 1];
+            bytes[l - j - 1] = temp;
+        }
+    }
+    
+    /**
      * Returns a copy of the given byte array with the bytes of each double-word (4 bytes) reversed.
      * 
      * @param bytes length must be divisible by 4.
@@ -380,15 +394,13 @@ public class Utils {
             int length = (int) readUint32BE(mpi, 0);
             buf = new byte[length];
             System.arraycopy(mpi, 4, buf, 0, length);
-        } else
+        } else {
             buf = mpi;
+        }
         if (buf.length == 0)
             return BigInteger.ZERO;
-        boolean isNegative = (buf[0] & 0x80) == 0x80;
-        if (isNegative)
-            buf[0] &= 0x7f;
-        BigInteger result = new BigInteger(buf);
-        return isNegative ? result.negate() : result;
+
+        return createBigIntegerAndNegateIfNeeded(buf);
     }
     
     /**
@@ -435,14 +447,27 @@ public class Utils {
     // hash value in only 32 bits.
     public static BigInteger decodeCompactBits(long compact) {
         int size = ((int) (compact >> 24)) & 0xFF;
-        byte[] bytes = new byte[4 + size];
-        bytes[3] = (byte) size;
-        if (size >= 1) bytes[4] = (byte) ((compact >> 16) & 0xFF);
-        if (size >= 2) bytes[5] = (byte) ((compact >> 8) & 0xFF);
-        if (size >= 3) bytes[6] = (byte) ((compact >> 0) & 0xFF);
-        return decodeMPI(bytes, true);
+        if (size == 0) {
+            return BigInteger.ZERO;
+        }
+
+        byte[] bytes = new byte[size];
+
+        if (size >= 1) bytes[0] = (byte) ((compact >> 16) & 0xFF);
+        if (size >= 2) bytes[1] = (byte) ((compact >> 8) & 0xFF);
+        if (size >= 3) bytes[2] = (byte) ((compact >> 0) & 0xFF);
+
+        return createBigIntegerAndNegateIfNeeded(bytes);
     }
 
+    private static BigInteger createBigIntegerAndNegateIfNeeded(byte[] bytes) {
+        boolean isNegative = (bytes[0] & 0x80) == 0x80;
+        if (isNegative)
+            bytes[0] &= 0x7f;
+        BigInteger result = new BigInteger(bytes);
+        return isNegative ? result.negate() : result;
+    }
+    
     /**
      * If non-null, overrides the return value of now().
      */

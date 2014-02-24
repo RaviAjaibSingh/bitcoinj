@@ -45,7 +45,7 @@ public class FilteredBlock extends Message {
         if (header.transactions == null)
             header.bitcoinSerializeToStream(stream);
         else
-            header.cloneAsHeader().bitcoinSerializeToStream(stream);
+            header.bitcoinSerializeToStream(stream, false /* don't include transactions */ );
         merkleTree.bitcoinSerializeToStream(stream);
     }
 

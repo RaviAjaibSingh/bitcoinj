@@ -141,9 +141,8 @@ public class FullPrunedBlockChain extends AbstractBlockChain {
     }
     
     @Override
-    protected TransactionOutputChanges connectTransactions(int height, Block block)
+    protected synchronized TransactionOutputChanges connectTransactions(int height, Block block)
             throws VerificationException, BlockStoreException {
-        checkState(lock.isHeldByCurrentThread());
         if (block.transactions == null)
             throw new RuntimeException("connectTransactions called with Block that didn't have transactions!");
         if (!params.passesCheckpoint(height, block.getHash()))
@@ -274,7 +273,6 @@ public class FullPrunedBlockChain extends AbstractBlockChain {
      */
     protected synchronized TransactionOutputChanges connectTransactions(StoredBlock newBlock)
             throws VerificationException, BlockStoreException, PrunedException {
-        checkState(lock.isHeldByCurrentThread());
         if (!params.passesCheckpoint(newBlock.getHeight(), newBlock.getHeader().getHash()))
             throw new VerificationException("Block failed checkpoint lockin at " + newBlock.getHeight());
         
@@ -410,8 +408,7 @@ public class FullPrunedBlockChain extends AbstractBlockChain {
      * must be checkpointed.
      */
     @Override
-    protected void disconnectTransactions(StoredBlock oldBlock) throws PrunedException, BlockStoreException {
-        checkState(lock.isHeldByCurrentThread());
+    protected synchronized void disconnectTransactions(StoredBlock oldBlock) throws PrunedException, BlockStoreException {
         blockStore.beginDatabaseBatchWrite();
         try {
             StoredUndoableBlock undoBlock = blockStore.getUndoBlock(oldBlock.getHeader().getHash());
@@ -431,20 +428,18 @@ public class FullPrunedBlockChain extends AbstractBlockChain {
     }
 
     @Override
-    protected void doSetChainHead(StoredBlock chainHead) throws BlockStoreException {
-        checkState(lock.isHeldByCurrentThread());
+    protected synchronized void doSetChainHead(StoredBlock chainHead) throws BlockStoreException {
         blockStore.setVerifiedChainHead(chainHead);
         blockStore.commitDatabaseBatchWrite();
     }
 
     @Override
-    protected void notSettingChainHead() throws BlockStoreException {
+    protected synchronized void notSettingChainHead() throws BlockStoreException {
         blockStore.abortDatabaseBatchWrite();
     }
 
     @Override
-    protected StoredBlock getStoredBlockInCurrentScope(Sha256Hash hash) throws BlockStoreException {
-        checkState(lock.isHeldByCurrentThread());
+    protected synchronized StoredBlock getStoredBlockInCurrentScope(Sha256Hash hash) throws BlockStoreException {
         return blockStore.getOnceUndoableStoredBlock(hash);
     }
 }

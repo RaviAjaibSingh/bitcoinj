@@ -32,7 +32,6 @@ import java.math.BigInteger;
 import java.util.*;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.Executor;
-import java.util.concurrent.locks.ReentrantLock;
 
 import static com.google.common.base.Preconditions.*;
 
@@ -81,7 +80,6 @@ import static com.google.common.base.Preconditions.*;
  */
 public abstract class AbstractBlockChain {
     private static final Logger log = LoggerFactory.getLogger(AbstractBlockChain.class);
-    protected final ReentrantLock lock = Threading.lock("blockchain");
 
     /** Keeps a map of block hashes to StoredBlocks. */
     private final BlockStore blockStore;
@@ -326,94 +324,88 @@ public abstract class AbstractBlockChain {
     private long statsBlocksAdded;
 
     // filteredTxHashList contains all transactions, filteredTxn just a subset
-    private boolean add(Block block, boolean tryConnecting,
+    private synchronized boolean add(Block block, boolean tryConnecting,
                         @Nullable List<Sha256Hash> filteredTxHashList, @Nullable Map<Sha256Hash, Transaction> filteredTxn)
             throws BlockStoreException, VerificationException, PrunedException {
-        lock.lock();
-        try {
-            // TODO: Use read/write locks to ensure that during chain download properties are still low latency.
-            if (System.currentTimeMillis() - statsLastTime > 1000) {
-                // More than a second passed since last stats logging.
-                if (statsBlocksAdded > 1)
-                    log.info("{} blocks per second", statsBlocksAdded);
-                statsLastTime = System.currentTimeMillis();
-                statsBlocksAdded = 0;
-            }
-            // Quick check for duplicates to avoid an expensive check further down (in findSplit). This can happen a lot
-            // when connecting orphan transactions due to the dumb brute force algorithm we use.
-            if (block.equals(getChainHead().getHeader())) {
-                return true;
-            }
-            if (tryConnecting && orphanBlocks.containsKey(block.getHash())) {
-                return false;
-            }
-
-            // If we want to verify transactions (ie we are running with full blocks), verify that block has transactions
-            if (shouldVerifyTransactions() && block.transactions == null)
-                throw new VerificationException("Got a block header while running in full-block mode");
-
-            // Check for already-seen block, but only for full pruned mode, where the DB is
-            // more likely able to handle these queries quickly.
-            if (shouldVerifyTransactions() && blockStore.get(block.getHash()) != null) {
-                return true;
-            }
-
-            // Does this block contain any transactions we might care about? Check this up front before verifying the
-            // blocks validity so we can skip the merkle root verification if the contents aren't interesting. This saves
-            // a lot of time for big blocks.
-            boolean contentsImportant = shouldVerifyTransactions();
-            if (block.transactions != null) {
-                contentsImportant = contentsImportant || containsRelevantTransactions(block);
-            }
-
-            // Prove the block is internally valid: hash is lower than target, etc. This only checks the block contents
-            // if there is a tx sending or receiving coins using an address in one of our wallets. And those transactions
-            // are only lightly verified: presence in a valid connecting block is taken as proof of validity. See the
-            // article here for more details: http://code.google.com/p/bitcoinj/wiki/SecurityModel
-            try {
-                block.verifyHeader();
-                if (contentsImportant)
-                    block.verifyTransactions();
-            } catch (VerificationException e) {
-                log.error("Failed to verify block: ", e);
-                log.error(block.getHashAsString());
-                throw e;
-            }
-
-            // Try linking it to a place in the currently known blocks.
-            StoredBlock storedPrev = getStoredBlockInCurrentScope(block.getPrevBlockHash());
-
-            if (storedPrev == null) {
-                // We can't find the previous block. Probably we are still in the process of downloading the chain and a
-                // block was solved whilst we were doing it. We put it to one side and try to connect it later when we
-                // have more blocks.
-                checkState(tryConnecting, "bug in tryConnectingOrphans");
-                log.warn("Block does not connect: {} prev {}", block.getHashAsString(), block.getPrevBlockHash());
-                orphanBlocks.put(block.getHash(), new OrphanBlock(block, filteredTxHashList, filteredTxn));
-                return false;
-            } else {
-                // It connects to somewhere on the chain. Not necessarily the top of the best known chain.
-                checkDifficultyTransitions(storedPrev, block);
-                connectBlock(block, storedPrev, shouldVerifyTransactions(), filteredTxHashList, filteredTxn);
-            }
-
-            if (tryConnecting)
-                tryConnectingOrphans();
-
-            statsBlocksAdded++;
-            return true;
-        } finally {
-            lock.unlock();
+        // TODO: Use read/write locks to ensure that during chain download properties are still low latency.
+        if (System.currentTimeMillis() - statsLastTime > 1000) {
+            // More than a second passed since last stats logging.
+            if (statsBlocksAdded > 1)
+                log.info("{} blocks per second", statsBlocksAdded);
+            statsLastTime = System.currentTimeMillis();
+            statsBlocksAdded = 0;
         }
+        // Quick check for duplicates to avoid an expensive check further down (in findSplit). This can happen a lot
+        // when connecting orphan transactions due to the dumb brute force algorithm we use.
+        if (block.equals(getChainHead().getHeader())) {
+            return true;
+        }
+        if (tryConnecting && orphanBlocks.containsKey(block.getHash())) {
+            return false;
+        }
+
+        // If we want to verify transactions (ie we are running with full blocks), verify that block has transactions
+        if (shouldVerifyTransactions() && block.transactions == null)
+            throw new VerificationException("Got a block header while running in full-block mode");
+
+        // Check for already-seen block, but only for full pruned mode, where the DB is
+        // more likely able to handle these queries quickly.
+        if (shouldVerifyTransactions() && blockStore.get(block.getHash()) != null) {
+            return true;
+        }
+
+        // Does this block contain any transactions we might care about? Check this up front before verifying the
+        // blocks validity so we can skip the merkle root verification if the contents aren't interesting. This saves
+        // a lot of time for big blocks.
+        boolean contentsImportant = shouldVerifyTransactions();
+        if (block.transactions != null) {
+            contentsImportant = contentsImportant || containsRelevantTransactions(block);
+        }
+
+        // Prove the block is internally valid: hash is lower than target, etc. This only checks the block contents
+        // if there is a tx sending or receiving coins using an address in one of our wallets. And those transactions
+        // are only lightly verified: presence in a valid connecting block is taken as proof of validity. See the
+        // article here for more details: http://code.google.com/p/bitcoinj/wiki/SecurityModel
+        try {
+            block.verifyHeader();
+            if (contentsImportant)
+                block.verifyTransactions();
+        } catch (VerificationException e) {
+            log.error("Failed to verify block: ", e);
+            log.error(block.getHashAsString());
+            throw e;
+        }
+
+        // Try linking it to a place in the currently known blocks.
+        StoredBlock storedPrev = getStoredBlockInCurrentScope(block.getPrevBlockHash());
+
+        if (storedPrev == null) {
+            // We can't find the previous block. Probably we are still in the process of downloading the chain and a
+            // block was solved whilst we were doing it. We put it to one side and try to connect it later when we
+            // have more blocks.
+            checkState(tryConnecting, "bug in tryConnectingOrphans");
+            log.warn("Block does not connect: {} prev {}", block.getHashAsString(), block.getPrevBlockHash());
+            orphanBlocks.put(block.getHash(), new OrphanBlock(block, filteredTxHashList, filteredTxn));
+            return false;
+        } else {
+            // It connects to somewhere on the chain. Not necessarily the top of the best known chain.
+            checkDifficultyTransitions(storedPrev, block);
+            connectBlock(block, storedPrev, shouldVerifyTransactions(), filteredTxHashList, filteredTxn);
+        }
+
+        if (tryConnecting)
+            tryConnectingOrphans();
+
+        statsBlocksAdded++;
+        return true;
     }
 
     // expensiveChecks enables checks that require looking at blocks further back in the chain
     // than the previous one when connecting (eg median timestamp check)
     // It could be exposed, but for now we just set it to shouldVerifyTransactions()
-    private void connectBlock(final Block block, StoredBlock storedPrev, boolean expensiveChecks,
+    private synchronized void connectBlock(final Block block, StoredBlock storedPrev, boolean expensiveChecks,
                               @Nullable final List<Sha256Hash> filteredTxHashList,
                               @Nullable final Map<Sha256Hash, Transaction> filteredTxn) throws BlockStoreException, VerificationException, PrunedException {
-        checkState(lock.isHeldByCurrentThread());
         boolean filtered = filteredTxHashList != null && filteredTxn != null;
         // Check that we aren't connecting a block that fails a checkpoint check
         if (!params.passesCheckpoint(storedPrev.getHeight() + 1, block.getHash()))
@@ -595,9 +587,8 @@ public abstract class AbstractBlockChain {
      * if (shouldVerifyTransactions)
      *     Either newChainHead needs to be in the block store as a FullStoredBlock, or (block != null && block.transactions != null)
      */
-    private void handleNewBestChain(StoredBlock storedPrev, StoredBlock newChainHead, Block block, boolean expensiveChecks)
+    private synchronized void handleNewBestChain(StoredBlock storedPrev, StoredBlock newChainHead, Block block, boolean expensiveChecks)
             throws BlockStoreException, VerificationException, PrunedException {
-        checkState(lock.isHeldByCurrentThread());
         // This chain has overtaken the one we currently believe is best. Reorganize is required.
         //
         // Firstly, calculate the block at which the chain diverged. We only need to examine the
@@ -756,8 +747,7 @@ public abstract class AbstractBlockChain {
     /**
      * For each block in orphanBlocks, see if we can now fit it on top of the chain and if so, do so.
      */
-    private void tryConnectingOrphans() throws VerificationException, BlockStoreException, PrunedException {
-        checkState(lock.isHeldByCurrentThread());
+    private synchronized void tryConnectingOrphans() throws VerificationException, BlockStoreException, PrunedException {
         // For each block in our orphan list, try and fit it onto the head of the chain. If we succeed remove it
         // from the list and keep going. If we changed the head of the list at the end of the round try again until
         // we can't fit anything else on the top.
@@ -796,8 +786,7 @@ public abstract class AbstractBlockChain {
     /**
      * Throws an exception if the blocks difficulty is not correct.
      */
-    private void checkDifficultyTransitions(StoredBlock storedPrev, Block nextBlock) throws BlockStoreException, VerificationException {
-        checkState(lock.isHeldByCurrentThread());
+    private synchronized void checkDifficultyTransitions(StoredBlock storedPrev, Block nextBlock) throws BlockStoreException, VerificationException {
         Block prev = storedPrev.getHeader();
         
         // Is this supposed to be a difficulty transition point?
@@ -865,8 +854,7 @@ public abstract class AbstractBlockChain {
                     receivedDifficulty.toString(16) + " vs " + newDifficulty.toString(16));
     }
 
-    private void checkTestnetDifficulty(StoredBlock storedPrev, Block prev, Block next) throws VerificationException, BlockStoreException {
-        checkState(lock.isHeldByCurrentThread());
+    private synchronized void checkTestnetDifficulty(StoredBlock storedPrev, Block prev, Block next) throws VerificationException, BlockStoreException {
         // After 15th February 2012 the rules on the testnet change to avoid people running up the difficulty
         // and then leaving, making it too hard to mine a block. On non-difficulty transition points, easy
         // blocks are allowed if there has been a span of 20 minutes without one.
@@ -929,30 +917,20 @@ public abstract class AbstractBlockChain {
      * @return from or one of froms parents, or null if "from" does not identify an orphan block
      */
     @Nullable
-    public Block getOrphanRoot(Sha256Hash from) {
-        lock.lock();
-        try {
-            OrphanBlock cursor = orphanBlocks.get(from);
-            if (cursor == null)
-                return null;
-            OrphanBlock tmp;
-            while ((tmp = orphanBlocks.get(cursor.block.getPrevBlockHash())) != null) {
-                cursor = tmp;
-            }
-            return cursor.block;
-        } finally {
-            lock.unlock();
+    public synchronized Block getOrphanRoot(Sha256Hash from) {
+        OrphanBlock cursor = orphanBlocks.get(from);
+        if (cursor == null)
+            return null;
+        OrphanBlock tmp;
+        while ((tmp = orphanBlocks.get(cursor.block.getPrevBlockHash())) != null) {
+            cursor = tmp;
         }
+        return cursor.block;
     }
 
     /** Returns true if the given block is currently in the orphan blocks list. */
-    public boolean isOrphan(Sha256Hash block) {
-        lock.lock();
-        try {
-            return orphanBlocks.containsKey(block);
-        } finally {
-            lock.unlock();
-        }
+    public synchronized boolean isOrphan(Sha256Hash block) {
+        return orphanBlocks.containsKey(block);
     }
 
     /**

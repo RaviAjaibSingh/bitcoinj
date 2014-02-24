@@ -441,11 +441,18 @@ public class Block extends Message {
 
     @Override
     protected void bitcoinSerializeToStream(OutputStream stream) throws IOException {
-        writeHeader(stream);
-        // We may only have enough data to write the header.
-        writeTransactions(stream);
+        bitcoinSerializeToStream(stream, true);
     }
 
+
+    public void bitcoinSerializeToStream(OutputStream stream, boolean includeTransactionHeaders) throws IOException {
+        writeHeader(stream);
+        // We may only have enough data to write the header.  Also, the caller may not want us to write the header
+        if (includeTransactionHeaders) {
+            writeTransactions(stream);
+        }
+    }
+    
     /**
      * Provides a reasonable guess at the byte length of the transactions part of the block.
      * The returned value will be accurate in 99% of cases and in those cases where not will probably slightly

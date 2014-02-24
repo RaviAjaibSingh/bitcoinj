@@ -54,8 +54,6 @@ public class SPVBlockStore implements BlockStore {
     protected int numHeaders;
     protected NetworkParameters params;
 
-    protected ReentrantLock lock = Threading.lock("SPVBlockStore");
-
     // The entire ring-buffer is mmapped and accessing it should be as fast as accessing regular memory once it's
     // faulted in. Unfortunately, in theory practice and theory are the same. In practice they aren't.
     //
@@ -144,11 +142,8 @@ public class SPVBlockStore implements BlockStore {
         header = HEADER_MAGIC.getBytes("US-ASCII");
         buffer.put(header);
         // Insert the genesis block.
-        lock.lock();
-        try {
+        synchronized (this) {
             setRingCursor(buffer, FILE_PROLOGUE_BYTES);
-        } finally {
-            lock.unlock();
         }
         Block genesis = params.getGenesisBlock().cloneAsHeader();
         StoredBlock storedGenesis = new StoredBlock(genesis, genesis.getWork(), 0);
@@ -165,8 +160,7 @@ public class SPVBlockStore implements BlockStore {
         final MappedByteBuffer buffer = this.buffer;
         if (buffer == null) throw new BlockStoreException("Store closed");
 
-        lock.lock();
-        try {
+        synchronized (this) {
             int cursor = getRingCursor(buffer);
             if (cursor == getFileSize()) {
                 // Wrapped around.
@@ -179,51 +173,51 @@ public class SPVBlockStore implements BlockStore {
             block.serializeCompact(buffer);
             setRingCursor(buffer, buffer.position());
             blockCache.put(hash, block);
-        } finally { lock.unlock(); }
+        }
     }
 
     @Nullable
     public StoredBlock get(Sha256Hash hash) throws BlockStoreException {
         final MappedByteBuffer buffer = this.buffer;
         if (buffer == null) throw new BlockStoreException("Store closed");
-
-        lock.lock();
-        try {
-            StoredBlock cacheHit = blockCache.get(hash);
-            if (cacheHit != null)
-                return cacheHit;
-            if (notFoundCache.get(hash) != null)
+        synchronized (this) {
+            try {
+                StoredBlock cacheHit = blockCache.get(hash);
+                if (cacheHit != null)
+                    return cacheHit;
+                if (notFoundCache.get(hash) != null)
+                    return null;
+    
+                // Starting from the current tip of the ring work backwards until we have either found the block or
+                // wrapped around.
+                int cursor = getRingCursor(buffer);
+                final int startingPoint = cursor;
+                final int fileSize = getFileSize();
+                final byte[] targetHashBytes = hash.getBytes();
+                byte[] scratch = new byte[32];
+                do {
+                    cursor -= RECORD_SIZE;
+                    if (cursor < FILE_PROLOGUE_BYTES) {
+                        // We hit the start, so wrap around.
+                        cursor = fileSize - RECORD_SIZE;
+                    }
+                    // Cursor is now at the start of the next record to check, so read the hash and compare it.
+                    buffer.position(cursor);
+                    buffer.get(scratch);
+                    if (Arrays.equals(scratch, targetHashBytes)) {
+                        // Found the target.
+                        StoredBlock storedBlock = StoredBlock.deserializeCompact(params, buffer);
+                        blockCache.put(hash, storedBlock);
+                        return storedBlock;
+                    }
+                } while (cursor != startingPoint);
+                // Not found.
+                notFoundCache.put(hash, notFoundMarker);
                 return null;
-
-            // Starting from the current tip of the ring work backwards until we have either found the block or
-            // wrapped around.
-            int cursor = getRingCursor(buffer);
-            final int startingPoint = cursor;
-            final int fileSize = getFileSize();
-            final byte[] targetHashBytes = hash.getBytes();
-            byte[] scratch = new byte[32];
-            do {
-                cursor -= RECORD_SIZE;
-                if (cursor < FILE_PROLOGUE_BYTES) {
-                    // We hit the start, so wrap around.
-                    cursor = fileSize - RECORD_SIZE;
-                }
-                // Cursor is now at the start of the next record to check, so read the hash and compare it.
-                buffer.position(cursor);
-                buffer.get(scratch);
-                if (Arrays.equals(scratch, targetHashBytes)) {
-                    // Found the target.
-                    StoredBlock storedBlock = StoredBlock.deserializeCompact(params, buffer);
-                    blockCache.put(hash, storedBlock);
-                    return storedBlock;
-                }
-            } while (cursor != startingPoint);
-            // Not found.
-            notFoundCache.put(hash, notFoundMarker);
-            return null;
-        } catch (ProtocolException e) {
-            throw new RuntimeException(e);  // Cannot happen.
-        } finally { lock.unlock(); }
+            } catch (ProtocolException e) {
+                throw new RuntimeException(e);  // Cannot happen.
+            }
+        }
     }
 
     protected StoredBlock lastChainHead = null;
@@ -232,8 +226,7 @@ public class SPVBlockStore implements BlockStore {
         final MappedByteBuffer buffer = this.buffer;
         if (buffer == null) throw new BlockStoreException("Store closed");
 
-        lock.lock();
-        try {
+        synchronized (this) {
             if (lastChainHead == null) {
                 byte[] headHash = new byte[32];
                 buffer.position(8);
@@ -245,20 +238,19 @@ public class SPVBlockStore implements BlockStore {
                 lastChainHead = block;
             }
             return lastChainHead;
-        } finally { lock.unlock(); }
+        }
     }
 
     public void setChainHead(StoredBlock chainHead) throws BlockStoreException {
         final MappedByteBuffer buffer = this.buffer;
         if (buffer == null) throw new BlockStoreException("Store closed");
 
-        lock.lock();
-        try {
+        synchronized (this) {
             lastChainHead = chainHead;
             byte[] headHash = chainHead.getHeader().getHash().getBytes();
             buffer.position(8);
             buffer.put(headHash);
-        } finally { lock.unlock(); }
+        }
     }
 
     public void close() throws BlockStoreException {
